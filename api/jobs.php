@@ -1,5 +1,4 @@
 <?php
-$input = file_get_contents("php://input");
 
 header('Content-Type: application/json');
 
@@ -8,11 +7,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-$jobsFile = __DIR__ . '/../data/jobs.json';
-$jobs = file_exists($jobsFile) ? json_decode(file_get_contents($jobsFile), true) : ["jobs" => []];
+$dsn = 'sqlsrv:Server=DESKTOP-16CF8KG\SQLEXPRESS;Database=hire_hatch';
+
+try {
+    $pdo = new PDO($dsn);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch (PDOException $e) {
+    http_response_code(500);
+    echo json_encode(["error" => "Database connection failed: " . $e->getMessage()]);
+    exit;
+}
+
+function mapJobFields($job) {
+    return [
+        'id' => $job['id'],
+        'jobTitle' => $job['job_title'],
+        'companyName' => $job['company_name'],
+        'priority' => $job['priority'],
+        'status' => $job['status'],
+        'source' => $job['source'],
+        'postingUrl' => $job['posting_url'],
+        'notes' => $job['notes']
+    ];
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    echo json_encode($jobs["jobs"]);
+    $stmt = $pdo->query('SELECT * FROM jobs');
+    $jobs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $mappedJobs = array_map('mapJobFields', $jobs);
+    echo json_encode($mappedJobs);
     exit;
 }
 
@@ -25,14 +48,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    $jobs['jobs'][] = $newJob;
-
-    file_put_contents($jobsFile, json_encode($jobs));
+    $stmt = $pdo->prepare('INSERT INTO jobs (job_title, company_name, priority, status, source, posting_url, notes) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    $stmt->execute([$newJob['jobTitle'], $newJob['companyName'], $newJob['priority'], $newJob['status'], $newJob['source'], $newJob['postingUrl'], $newJob['notes']]);
+    $newJob['id'] = $pdo->lastInsertId();
     http_response_code(201);
     echo json_encode($newJob);
     exit;
 }
-
 
 if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
     $updatedJob = json_decode(file_get_contents("php://input"), true);
@@ -43,22 +65,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
         exit;
     }
 
-    $jobFound = false;
-    foreach ($jobs['jobs'] as &$job) {
-        if ($job['id'] === $updatedJob['id']) {
-            $job = $updatedJob;
-            $jobFound = true;
-            break;
-        }
-    }
-
-    if (!$jobFound) {
-        http_response_code(404);
-        echo json_encode(["error" => "Job not found."]);
-        exit;
-    }
-
-    file_put_contents($jobsFile, json_encode($jobs));
+    $stmt = $pdo->prepare('UPDATE jobs SET job_title = ?, company_name = ?, priority = ?, status = ?, source = ?, posting_url = ?, notes = ? WHERE id = ?');
+    $stmt->execute([$updatedJob['jobTitle'], $updatedJob['companyName'], $updatedJob['priority'], $updatedJob['status'], $updatedJob['source'], $updatedJob['postingUrl'], $updatedJob['notes'], $updatedJob['id']]);
     echo json_encode($updatedJob);
     exit;
 }
@@ -73,24 +81,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
         exit;
     }
 
-    $jobFound = false;
-    foreach ($jobs['jobs'] as $key => $job) {
-        if ($job['id'] === $jobId) {
-            unset($jobs['jobs'][$key]);
-            $jobFound = true;
-            break;
-        }
-    }
+    $stmt = $pdo->prepare('DELETE FROM jobs WHERE id = ?');
+    $stmt->execute([$jobId]);
 
-    if (!$jobFound) {
+    if ($stmt->rowCount() === 0) {
         http_response_code(404);
         echo json_encode(["error" => "Job not found."]);
         exit;
     }
 
-    $jobs['jobs'] = array_values($jobs['jobs']);
-
-    file_put_contents($jobsFile, json_encode($jobs));
     echo json_encode(["message" => "Job deleted successfully."]);
     exit;
 }
